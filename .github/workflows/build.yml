@@ -1,0 +1,124 @@
+name: 自动构建并发布 Docker 镜像
+
+on:
+  # 每 30 分钟自动检查上游新 release
+  schedule:
+    - cron: "*/30 * * * *"
+  # 允许手动触发
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "指定版本号 (如 v0.9.2)，留空则自动检测最新版本"
+        required: false
+        type: string
+      force:
+        description: "强制重建（覆盖已发布的同版本镜像）"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  IMAGE_NAME: aqrk/byokey-docker
+  UPSTREAM_REPO: AprilNEA/BYOKEY
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 检测上游版本
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=$(curl -s "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest" \
+              | jq -r '.tag_name')
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Upstream version: ${VERSION}"
+
+      - name: 检查镜像是否已存在
+        id: check
+        run: |
+          # 手动触发且勾选强制重建时，跳过检查直接构建
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Force rebuild enabled, skipping existence check."
+            exit 0
+          fi
+          TAG="${{ steps.version.outputs.version }}"
+          # 通过 Docker Hub API 检查 tag 是否已存在
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://hub.docker.com/v2/repositories/${IMAGE_NAME}/tags/${TAG}" 2>/dev/null || echo "000")
+          if [ "$STATUS" = "200" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Image ${TAG} already exists, skipping build."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Image ${TAG} not found, will build."
+          fi
+
+      - name: 配置 Docker Buildx
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: 配置 QEMU (多架构支持)
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: 登录 Docker Hub
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 构建并推送 Docker 镜像
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            BYOKEY_VERSION=${{ steps.version.outputs.version }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 创建版本标签
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          TAG="${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # 强制模式下覆盖已有 tag，否则仅在不存在时创建
+          if [ "${{ inputs.force }}" = "true" ]; then
+            git tag -fa "${TAG}" -m "Auto-build BYOKEY ${TAG}"
+            git push origin "${TAG}" --force
+          elif ! git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            git tag -a "${TAG}" -m "Auto-build BYOKEY ${TAG}"
+            git push origin "${TAG}"
+          fi
+
+      - name: 构建摘要
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          TAG="${{ steps.version.outputs.version }}"
+          echo "## Docker Image Published :whale:" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version**: \`${TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image**: \`${{ env.IMAGE_NAME }}:${TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Platforms**: linux/amd64, linux/arm64" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```bash' >> "$GITHUB_STEP_SUMMARY"
+          echo "docker pull ${{ env.IMAGE_NAME }}:${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

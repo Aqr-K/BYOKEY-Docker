@@ -1,0 +1,16 @@
+services:
+  byokey:
+    image: aqrk/byokey-docker:latest
+    container_name: byokey
+    restart: unless-stopped
+    ports:
+      - "8018:8018"
+    volumes:
+      - byokey-data:/data
+      # - ./settings.yaml:/data/settings.yaml:ro
+    environment:
+      - BYOKEY_HOST=0.0.0.0
+      - BYOKEY_PORT=8018
+
+volumes:
+  byokey-data:

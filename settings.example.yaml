@@ -1,0 +1,19 @@
+# BYOKEY Configuration Example
+# Copy to settings.yaml and edit as needed.
+# See: https://github.com/AprilNEA/BYOKEY#configuration
+
+port: 8018
+host: 0.0.0.0
+
+providers:
+  # Use a raw API key (takes precedence over OAuth)
+  # claude:
+  #   api_key: "sk-ant-..."
+
+  # Disable a provider entirely
+  # gemini:
+  #   enabled: false
+
+  # OAuth-only (no api_key) — use `byokey login codex` first
+  # codex:
+  #   enabled: true
